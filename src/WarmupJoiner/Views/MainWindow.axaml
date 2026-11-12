@@ -4,6 +4,7 @@
         x:Class="WarmupJoiner.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="WarmupJoiner"
+        Icon="/Assets/app.ico"
         Width="560" Height="760"
         MinWidth="460" MinHeight="560">
 
