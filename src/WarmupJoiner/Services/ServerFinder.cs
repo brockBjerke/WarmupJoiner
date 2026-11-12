@@ -17,13 +17,17 @@ public sealed class ServerFinder
 
     public Task<List<ServerCard>> FetchCardsAsync(CancellationToken ct) => _api.FetchServersAsync(ct);
 
-    public static List<ServerCard> FilterCandidates(IEnumerable<ServerCard> cards, UserSettings settings) =>
+    public static List<ServerCard> FilterCandidates(
+        IEnumerable<ServerCard> cards,
+        UserSettings settings,
+        ISet<string>? excludedIps = null) =>
         cards
             .Where(c => c.IsFresh && c.FreeSlots > 0)
             .Where(c => c.Humans >= settings.MinHumanPlayers)
             .Where(c => !settings.ExcludeServersWithBots || c.Bots == 0)
             .Where(c => settings.PreferredCities.Count == 0 || settings.PreferredCities.Contains(c.City))
             .Where(c => settings.PreferredModes.Count == 0 || settings.PreferredModes.Contains(c.Mode))
+            .Where(c => excludedIps is null || !excludedIps.Contains(c.Ip))
             .OrderByDescending(c => c.Humans)
             .ThenBy(c => c.Bots)
             .ToList();
@@ -76,7 +80,11 @@ public sealed class ServerFinder
             .ToList();
     }
 
-    public async Task<ServerCard?> RunUntilFoundAsync(UserSettings settings, Action<string> log, CancellationToken ct)
+    public async Task<ServerCard?> RunUntilFoundAsync(
+        UserSettings settings,
+        Action<string> log,
+        CancellationToken ct,
+        ISet<string>? excludedIps = null)
     {
         var deadline = settings.SearchTimeoutSeconds > 0
             ? DateTime.UtcNow.AddSeconds(settings.SearchTimeoutSeconds)
@@ -99,7 +107,7 @@ public sealed class ServerFinder
                 cards = new List<ServerCard>();
             }
 
-            var filtered = FilterCandidates(cards, settings);
+            var filtered = FilterCandidates(cards, settings, excludedIps);
             if (filtered.Count == 0)
             {
                 log("No server matches your filters yet.");

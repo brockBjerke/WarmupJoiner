@@ -22,7 +22,7 @@
         <StackPanel Spacing="8">
           <CheckBox Content="Exclude servers that currently have bots" IsChecked="{Binding ExcludeServersWithBots}" />
 
-          <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+          <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="12">
             <StackPanel Grid.Column="0" Spacing="2">
               <TextBlock Text="Min. human players" FontSize="12" Opacity="0.7" />
               <TextBox Text="{Binding MinHumanPlayersText}" />
@@ -34,6 +34,10 @@
             <StackPanel Grid.Column="2" Spacing="2">
               <TextBlock Text="Give up after (s, 0 = never)" FontSize="12" Opacity="0.7" />
               <TextBox Text="{Binding SearchTimeoutSecondsText}" />
+            </StackPanel>
+            <StackPanel Grid.Column="3" Spacing="2">
+              <TextBlock Text="Load-in timeout (s)" FontSize="12" Opacity="0.7" />
+              <TextBox Text="{Binding JoinTimeoutSecondsText}" />
             </StackPanel>
           </Grid>
         </StackPanel>
@@ -87,10 +91,8 @@
             Margin="0,0,0,12" />
 
     <Border Grid.Row="3" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Height="160">
-      <ScrollViewer>
-        <TextBox Text="{Binding StatusText}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
-                 BorderThickness="0" FontFamily="Consolas,Menlo,monospace" FontSize="12" Padding="8" />
-      </ScrollViewer>
+      <TextBox x:Name="LogTextBox" Text="{Binding StatusText}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+               BorderThickness="0" FontFamily="Consolas,Menlo,monospace" FontSize="12" Padding="8" />
     </Border>
 
   </Grid>

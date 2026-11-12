@@ -12,6 +12,9 @@ public sealed class UserSettings
     /// <summary>0 means keep retrying until the user cancels.</summary>
     public int SearchTimeoutSeconds { get; set; }
 
+    /// <summary>How long to wait for CS2 to actually show you on the target map after connecting, before giving up on that attempt.</summary>
+    public int JoinTimeoutSeconds { get; set; } = 10;
+
     /// <summary>Empty means any city is acceptable. Selecting a whole region selects all of its cities.</summary>
     public List<string> PreferredCities { get; set; } = new();
 

@@ -10,8 +10,10 @@ namespace WarmupJoiner.ViewModels;
 public sealed class MainViewModel : ViewModelBase
 {
     private const int MaxLogChars = 8000;
+    private static readonly TimeSpan JoinSettleWindow = TimeSpan.FromSeconds(5);
 
     private readonly ServerFinder _finder = new();
+    private readonly GsiJoinMonitor _gsi = new();
     private readonly StringBuilder _log = new();
     private CancellationTokenSource? _searchCts;
     private bool _initialized;
@@ -20,6 +22,7 @@ public sealed class MainViewModel : ViewModelBase
     private string _minHumanPlayersText = "2";
     private string _pollIntervalSecondsText = "15";
     private string _searchTimeoutSecondsText = "0";
+    private string _joinTimeoutSecondsText = "10";
     private bool _isSearching;
     private string _statusText = string.Empty;
     private string _actionButtonText = "Find & Join";
@@ -31,11 +34,23 @@ public sealed class MainViewModel : ViewModelBase
         _minHumanPlayersText = saved.MinHumanPlayers.ToString();
         _pollIntervalSecondsText = saved.PollIntervalSeconds.ToString();
         _searchTimeoutSecondsText = saved.SearchTimeoutSeconds.ToString();
+        _joinTimeoutSecondsText = saved.JoinTimeoutSeconds.ToString();
 
         StartStopCommand = new RelayCommand(OnStartStop);
 
         Log("Ready. Set your preferences and hit \"Find & Join\".");
         _ = PopulateFiltersAsync(saved.PreferredCities, saved.PreferredModes);
+
+        if (_gsi.TryStart(out var gsiStatus))
+        {
+            Log(gsiStatus);
+        }
+        else
+        {
+            Log($"{gsiStatus} (joins will no longer be auto-retried on failure.)");
+        }
+
+        _ = CheckForUpdatesAsync();
     }
 
     public ObservableCollection<RegionGroupViewModel> LocationGroups { get; } = new();
@@ -86,6 +101,18 @@ public sealed class MainViewModel : ViewModelBase
         set
         {
             if (SetField(ref _searchTimeoutSecondsText, value))
+            {
+                PersistSettings();
+            }
+        }
+    }
+
+    public string JoinTimeoutSecondsText
+    {
+        get => _joinTimeoutSecondsText;
+        set
+        {
+            if (SetField(ref _joinTimeoutSecondsText, value))
             {
                 PersistSettings();
             }
@@ -153,6 +180,16 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    private async Task CheckForUpdatesAsync()
+    {
+        var currentVersion = typeof(MainViewModel).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        var message = await new UpdateChecker().CheckAsync(currentVersion, CancellationToken.None).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(message))
+        {
+            Log(message);
+        }
+    }
+
     private void OnStartStop()
     {
         if (IsSearching)
@@ -178,18 +215,64 @@ public sealed class MainViewModel : ViewModelBase
 
     private async Task RunSearchAsync(UserSettings settings, CancellationToken ct)
     {
+        var failedEndpoints = new HashSet<string>();
+
         try
         {
-            var found = await _finder.RunUntilFoundAsync(settings, Log, ct).ConfigureAwait(false);
-            if (found is not null && found.TryGetEndpoint(out var host, out var port))
+            while (!ct.IsCancellationRequested)
             {
-                Log($"Joining {found.DisplayName}...");
-                SteamLauncher.Connect(host, port);
+                // Scoped per attempt, not around the whole loop: a hiccup on
+                // one candidate (e.g. a flaky GSI event) should only cost us
+                // that one attempt, never silently end the entire retry loop.
+                try
+                {
+                    var found = await _finder.RunUntilFoundAsync(settings, Log, ct, failedEndpoints).ConfigureAwait(false);
+                    if (found is null)
+                    {
+                        return;
+                    }
+
+                    if (!found.TryGetEndpoint(out var host, out var port))
+                    {
+                        Log($"Could not parse an address for {found.DisplayName}.");
+                        return;
+                    }
+
+                    Log($"Joining {found.DisplayName}...");
+                    SteamLauncher.Connect(host, port);
+
+                    var confirmation = await WaitForJoinWithHeartbeatAsync(found, settings.JoinTimeoutSeconds, ct).ConfigureAwait(false);
+                    switch (confirmation)
+                    {
+                        case JoinConfirmationResult.Confirmed:
+                            Log($"Confirmed - you're in and playing on {found.Map}.");
+                            return;
+
+                        case JoinConfirmationResult.JoinedThenLeft:
+                            Log($"You connected to {found.DisplayName} but left/got kicked shortly after. Trying another server...");
+                            failedEndpoints.Add(found.Ip);
+                            continue;
+
+                        case JoinConfirmationResult.NotConfirmed:
+                            Log($"Could not confirm you joined {found.DisplayName} within {settings.JoinTimeoutSeconds}s. Trying another server...");
+                            failedEndpoints.Add(found.Ip);
+                            continue;
+
+                        case JoinConfirmationResult.Unavailable:
+                        default:
+                            Log("Join confirmation isn't available, so assuming that worked.");
+                            return;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Log($"Hit an unexpected error on that attempt ({ex.Message}). Trying another server...");
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            Log($"Search stopped unexpectedly: {ex.Message}");
         }
         finally
         {
@@ -199,6 +282,33 @@ public sealed class MainViewModel : ViewModelBase
                 ActionButtonText = "Find & Join";
             });
         }
+    }
+
+    private async Task<JoinConfirmationResult> WaitForJoinWithHeartbeatAsync(ServerCard found, int joinTimeoutSeconds, CancellationToken ct)
+    {
+        var joinTimeout = TimeSpan.FromSeconds(joinTimeoutSeconds);
+        Log($"Confirming you actually got into {found.Map} (up to {joinTimeoutSeconds}s to load in, " +
+            $"then {JoinSettleWindow.TotalSeconds:0}s to make sure it sticks)...");
+        Dispatcher.UIThread.Post(() => ActionButtonText = "Confirming join...");
+
+        var confirmTask = _gsi.WaitForJoinAsync(found.Map, joinTimeout, JoinSettleWindow, ct);
+        var heartbeatInterval = TimeSpan.FromSeconds(8);
+        var elapsedSeconds = 0;
+
+        while (!confirmTask.IsCompleted)
+        {
+            var tick = await Task.WhenAny(confirmTask, Task.Delay(heartbeatInterval)).ConfigureAwait(false);
+            if (tick == confirmTask)
+            {
+                break;
+            }
+
+            elapsedSeconds += (int)heartbeatInterval.TotalSeconds;
+            Log($"Still waiting to confirm ({elapsedSeconds}s elapsed)...");
+        }
+
+        Dispatcher.UIThread.Post(() => ActionButtonText = "Stop Searching");
+        return await confirmTask.ConfigureAwait(false);
     }
 
     private bool TryBuildSettings(out UserSettings settings, out string error)
@@ -224,10 +334,17 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
 
+        if (!int.TryParse(JoinTimeoutSecondsText, out var joinTimeout) || joinTimeout < 3)
+        {
+            error = "Load-in timeout must be at least 3 seconds.";
+            return false;
+        }
+
         settings.ExcludeServersWithBots = ExcludeServersWithBots;
         settings.MinHumanPlayers = minHumans;
         settings.PollIntervalSeconds = poll;
         settings.SearchTimeoutSeconds = timeout;
+        settings.JoinTimeoutSeconds = joinTimeout;
         settings.PreferredCities = LocationGroups.SelectMany(g => g.Cities).Where(c => c.IsSelected).Select(c => c.Name).ToList();
         settings.PreferredModes = GameModes.Where(m => m.IsSelected).Select(m => m.Name).ToList();
         return true;

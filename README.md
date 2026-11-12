@@ -48,6 +48,41 @@ Connect" button uses), so Steam launches/foregrounds CS2 and connects for you.
 All of your filter choices are saved to disk as soon as you change them, so
 they're already set the next time you open the app.
 
+### Join confirmation (and auto-retry)
+
+Firing the connect link doesn't guarantee you actually get in - someone else
+can take the last slot in the gap between the server list refreshing and CS2
+loading, or the server can boot you right back out. To catch that, the app
+uses CS2's built-in **Game State Integration** to check whether you're
+actually in and playing on the target map. This is a two-phase wait, not one
+long fixed timer, since a kick after a successful join tends to happen almost
+immediately: up to your "Load-in timeout" setting (default 10s - covers
+CS2/map load time, tune it up if your machine loads in slower) to see you on
+the map at all, then once you're confirmed in, only 5 more seconds to make
+sure it sticks before declaring success - so a fast kick gets caught and
+retried in seconds, not after sitting out a long fixed window regardless of
+what already happened.
+
+- **Confirmed** - you're in. Done.
+- **Joined then left** - GSI saw you on the map, then saw you back at the
+  menu (kicked/dropped). The app crosses that server off and tries the next
+  match automatically.
+- **Not confirmed** - never saw you on the map in time (could mean the
+  connect failed, or CS2 is just still loading). Also retried automatically.
+
+This needs CS2's GSI to be pointed at the app, which happens automatically -
+on first launch, WarmupJoiner writes a small config file into your CS2
+install (`game/csgo/cfg/gamestate_integration_warmupjoiner.cfg`) and starts a
+local listener. If it can't find your CS2 install to do that automatically,
+it'll say so in the log and join confirmation (and the auto-retry-on-failure
+behavior) is simply skipped - everything else still works.
+
+### Update checks
+
+On launch, the app checks GitHub's latest release and logs a link if a newer
+version exists. It never downloads or replaces anything on its own - that
+part's still on you.
+
 ## Building from source
 
 Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download).
