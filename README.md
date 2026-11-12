@@ -17,6 +17,9 @@ no install, just unzip and run:
   (Windows SmartScreen will warn once because the binary isn't code-signed -
   click "More info" → "Run anyway".)
 - **Linux**: `WarmupJoiner-linux-x64.zip` → `chmod +x WarmupJoiner && ./WarmupJoiner`
+  (runs fine as-is; to also get it in your app menu/dock with its icon, run
+  `./install-desktop-entry.sh` once - GNOME/KDE only show a custom icon for
+  apps registered with a `.desktop` entry, not for a bare binary)
 
 Steam must already be installed and running - joining works by handing off to
 Steam's own `steam://connect/...` link (the same one WarmupServer's "Instant
