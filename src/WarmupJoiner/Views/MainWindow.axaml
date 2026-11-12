@@ -1,0 +1,68 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:WarmupJoiner.ViewModels"
+        x:Class="WarmupJoiner.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="WarmupJoiner"
+        Width="520" Height="640"
+        MinWidth="420" MinHeight="480">
+
+  <Grid Margin="16" RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+    <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,12">
+      <TextBlock Text="WarmupJoiner" FontSize="22" FontWeight="Bold" />
+      <TextBlock Text="Unofficial companion app for warmupserver.net - finds a server matching your preferences and connects you automatically."
+                 TextWrapping="Wrap" Opacity="0.7" />
+    </StackPanel>
+
+    <StackPanel Grid.Row="1" Spacing="8" Margin="0,0,0,12">
+      <CheckBox Content="Exclude servers that currently have bots" IsChecked="{Binding ExcludeServersWithBots}" />
+
+      <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="8">
+        <StackPanel Grid.Row="0" Grid.Column="0" Spacing="2">
+          <TextBlock Text="Min. human players" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding MinHumanPlayersText}" />
+        </StackPanel>
+        <StackPanel Grid.Row="0" Grid.Column="1" Spacing="2">
+          <TextBlock Text="Max ping (ms)" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding MaxPingMsText}" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" Grid.Column="0" Spacing="2">
+          <TextBlock Text="Re-check every (s)" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding PollIntervalSecondsText}" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" Grid.Column="1" Spacing="2">
+          <TextBlock Text="Give up after (s, 0 = never)" FontSize="12" Opacity="0.7" />
+          <TextBox Text="{Binding SearchTimeoutSecondsText}" />
+        </StackPanel>
+      </Grid>
+    </StackPanel>
+
+    <StackPanel Grid.Row="2" Spacing="4" Margin="0,0,0,12">
+      <TextBlock Text="Preferred regions (none selected = any)" FontSize="12" Opacity="0.7" />
+      <ItemsControl ItemsSource="{Binding Regions}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="0,0,12,4" />
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+
+    <Border Grid.Row="3" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Margin="0,0,0,12">
+      <ScrollViewer>
+        <TextBox Text="{Binding StatusText}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                 BorderThickness="0" FontFamily="Consolas,Menlo,monospace" FontSize="12" Padding="8" />
+      </ScrollViewer>
+    </Border>
+
+    <Button Grid.Row="4" Content="{Binding ActionButtonText}" Command="{Binding StartStopCommand}"
+            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Padding="0,12" FontSize="16" />
+
+  </Grid>
+</Window>
