@@ -29,15 +29,21 @@ Connect" button uses), so Steam launches/foregrounds CS2 and connects for you.
 2. Filters servers by your preferences:
    - exclude servers that currently have bots
    - minimum number of human players already in the server
-   - preferred region(s) (leave all unchecked for "any")
+   - region/city - check a whole region (e.g. North America) or drill into
+     specific cities (e.g. just Dallas and Chicago)
+   - game mode (MultiCFG, Rifles only, AIM-DM, etc.)
    - a hard rule, always on: only considers servers with an actual free slot
-3. Pings the surviving candidates for real (a direct query to the game port,
-   the same kind real server browsers use - not just a ping to the website)
-   and drops anything over your max-ping setting.
-4. Picks the most-populated server that still fits your filters and ping
-   limit, and opens `steam://connect/<ip>:<port>`.
+3. Among the matches, picks the most-populated one (ping to each candidate
+   is measured as an internal tie-break only - a direct query to the game
+   port, the same kind real server browsers use - but it never excludes a
+   server, since the measurement itself can be unreliable on a flaky
+   connection even when the server is fine).
+4. Opens `steam://connect/<ip>:<port>` for the winner.
 5. If nothing matches, it waits (your "re-check every" interval) and tries
    again, until it finds a match, you stop it, or your timeout is hit.
+
+All of your filter choices are saved to disk as soon as you change them, so
+they're already set the next time you open the app.
 
 ## Building from source
 

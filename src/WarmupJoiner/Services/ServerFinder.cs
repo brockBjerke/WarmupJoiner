@@ -3,15 +3,78 @@ using WarmupJoiner.Models;
 namespace WarmupJoiner.Services;
 
 /// <summary>
-/// The core "find me a server" loop: fetch the live list, filter it down to
-/// what the user actually wants, ping-test the survivors, and pick the best one.
+/// The core "find me a server" logic: fetch the live list, filter it down to
+/// what the user actually wants, and rank the survivors. Ping is measured for
+/// internal tie-breaking only - it is never a user-facing filter, since the
+/// measurement itself can be unreliable on a flaky connection.
 /// </summary>
 public sealed class ServerFinder
 {
-    private const int PingTimeoutMs = 1000;
+    public const int PingTimeoutMs = 1000;
     private const int MaxCandidatesToPing = 15;
 
     private readonly WarmupApiClient _api = new();
+
+    public Task<List<ServerCard>> FetchCardsAsync(CancellationToken ct) => _api.FetchServersAsync(ct);
+
+    public static List<ServerCard> FilterCandidates(IEnumerable<ServerCard> cards, UserSettings settings) =>
+        cards
+            .Where(c => c.IsFresh && c.FreeSlots > 0)
+            .Where(c => c.Humans >= settings.MinHumanPlayers)
+            .Where(c => !settings.ExcludeServersWithBots || c.Bots == 0)
+            .Where(c => settings.PreferredCities.Count == 0 || settings.PreferredCities.Contains(c.City))
+            .Where(c => settings.PreferredModes.Count == 0 || settings.PreferredModes.Contains(c.Mode))
+            .OrderByDescending(c => c.Humans)
+            .ThenBy(c => c.Bots)
+            .ToList();
+
+    /// <summary>
+    /// When nothing fully matches, surface the few servers that were actually
+    /// close - real activity, right city/mode - and say exactly why each one
+    /// got passed over, instead of a flat "no match" with no explanation.
+    /// Empty/dead servers are never reported here; they're not "close", just noise.
+    /// </summary>
+    private static List<(ServerCard Card, string Reason)> FindNearMisses(
+        IEnumerable<ServerCard> cards,
+        UserSettings settings,
+        int maxToReport = 3)
+    {
+        var withinScope = cards
+            .Where(c => c.IsFresh && c.Humans > 0)
+            .Where(c => settings.PreferredCities.Count == 0 || settings.PreferredCities.Contains(c.City))
+            .Where(c => settings.PreferredModes.Count == 0 || settings.PreferredModes.Contains(c.Mode));
+
+        var withReasons = new List<(ServerCard Card, string Reason)>();
+        foreach (var card in withinScope)
+        {
+            var reasons = new List<string>();
+
+            if (card.FreeSlots <= 0)
+            {
+                reasons.Add($"it's full ({card.Humans + card.Bots}/{card.Capacity})");
+            }
+
+            if (settings.ExcludeServersWithBots && card.Bots > 0)
+            {
+                reasons.Add($"it has {card.Bots} bot{(card.Bots == 1 ? "" : "s")}");
+            }
+
+            if (card.Humans < settings.MinHumanPlayers)
+            {
+                reasons.Add($"only {card.Humans} player{(card.Humans == 1 ? "" : "s")} online (you asked for {settings.MinHumanPlayers}+)");
+            }
+
+            if (reasons.Count > 0)
+            {
+                withReasons.Add((card, string.Join(" and ", reasons)));
+            }
+        }
+
+        return withReasons
+            .OrderByDescending(r => r.Card.Humans)
+            .Take(maxToReport)
+            .ToList();
+    }
 
     public async Task<ServerCard?> RunUntilFoundAsync(UserSettings settings, Action<string> log, CancellationToken ct)
     {
@@ -36,10 +99,23 @@ public sealed class ServerFinder
                 cards = new List<ServerCard>();
             }
 
-            var best = await FindBestCandidateAsync(cards, settings, log, ct).ConfigureAwait(false);
-            if (best is not null)
+            var filtered = FilterCandidates(cards, settings);
+            if (filtered.Count == 0)
             {
-                return best;
+                log("No server matches your filters yet.");
+                foreach (var (card, reason) in FindNearMisses(cards, settings))
+                {
+                    log($"  Close: would join {card.DisplayName}, but {reason}.");
+                }
+            }
+            else
+            {
+                log($"{filtered.Count} server(s) match your filters, checking ping...");
+                var best = await PickBestAsync(filtered.Take(MaxCandidatesToPing), ct).ConfigureAwait(false);
+
+                var pingLabel = best.PingMs is { } ms ? $"{ms}ms" : "unknown (no response)";
+                log($"Best match: {best.Card.DisplayName} - {best.Card.Humans} players, ping {pingLabel}.");
+                return best.Card;
             }
 
             if (deadline is not null && DateTime.UtcNow >= deadline)
@@ -48,7 +124,7 @@ public sealed class ServerFinder
                 return null;
             }
 
-            log($"No match yet. Waiting {settings.PollIntervalSeconds}s before retrying...");
+            log($"Waiting {settings.PollIntervalSeconds}s before retrying...");
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(settings.PollIntervalSeconds), ct).ConfigureAwait(false);
@@ -62,54 +138,26 @@ public sealed class ServerFinder
         return null;
     }
 
-    private static async Task<ServerCard?> FindBestCandidateAsync(
-        IEnumerable<ServerCard> cards,
-        UserSettings settings,
-        Action<string> log,
-        CancellationToken ct)
+    private static async Task<(ServerCard Card, int? PingMs)> PickBestAsync(IEnumerable<ServerCard> candidates, CancellationToken ct)
     {
-        var filtered = cards
-            .Where(c => c.IsFresh && c.FreeSlots > 0)
-            .Where(c => c.Humans >= settings.MinHumanPlayers)
-            .Where(c => !settings.ExcludeServersWithBots || c.Bots == 0)
-            .Where(c => settings.PreferredRegions.Count == 0 || settings.PreferredRegions.Contains(c.Region))
-            .OrderByDescending(c => c.Humans)
-            .ThenBy(c => c.Bots)
-            .Take(MaxCandidatesToPing)
-            .ToList();
-
-        if (filtered.Count == 0)
-        {
-            log("No server matches your filters yet.");
-            return null;
-        }
-
-        log($"{filtered.Count} server(s) match your filters, checking ping...");
-
-        var pingResults = await Task.WhenAll(filtered.Select(async card =>
+        var tasks = candidates.Select(async card =>
         {
             if (!card.TryGetEndpoint(out var host, out var port))
             {
-                return (Card: card, Ping: (int?)null);
+                return (Card: card, PingMs: (int?)null);
             }
 
             var ping = await ServerPinger.MeasureAsync(host, port, PingTimeoutMs, ct).ConfigureAwait(false);
-            return (Card: card, Ping: ping);
-        })).ConfigureAwait(false);
+            return (Card: card, PingMs: ping);
+        });
 
-        var best = pingResults
-            .Where(r => r.Ping is not null && r.Ping <= settings.MaxPingMs)
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Ping never excludes a candidate - it's only a tie-break among
+        // equally populated servers. Unknown ping sorts last, not out.
+        return results
             .OrderByDescending(r => r.Card.Humans)
-            .ThenBy(r => r.Ping)
-            .FirstOrDefault();
-
-        if (best.Card is null)
-        {
-            log("Matching servers were found, but none responded within your ping limit.");
-            return null;
-        }
-
-        log($"Best match: {best.Card.DisplayName} - {best.Card.Humans} players, {best.Ping}ms ping.");
-        return best.Card;
+            .ThenBy(r => r.PingMs ?? int.MaxValue)
+            .First();
     }
 }

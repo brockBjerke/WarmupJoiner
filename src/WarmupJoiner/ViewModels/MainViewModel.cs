@@ -14,10 +14,10 @@ public sealed class MainViewModel : ViewModelBase
     private readonly ServerFinder _finder = new();
     private readonly StringBuilder _log = new();
     private CancellationTokenSource? _searchCts;
+    private bool _initialized;
 
     private bool _excludeServersWithBots;
     private string _minHumanPlayersText = "2";
-    private string _maxPingMsText = "80";
     private string _pollIntervalSecondsText = "15";
     private string _searchTimeoutSecondsText = "0";
     private bool _isSearching;
@@ -29,48 +29,67 @@ public sealed class MainViewModel : ViewModelBase
         var saved = SettingsStore.Load();
         _excludeServersWithBots = saved.ExcludeServersWithBots;
         _minHumanPlayersText = saved.MinHumanPlayers.ToString();
-        _maxPingMsText = saved.MaxPingMs.ToString();
         _pollIntervalSecondsText = saved.PollIntervalSeconds.ToString();
         _searchTimeoutSecondsText = saved.SearchTimeoutSeconds.ToString();
 
         StartStopCommand = new RelayCommand(OnStartStop);
 
         Log("Ready. Set your preferences and hit \"Find & Join\".");
-        _ = PopulateRegionsAsync(saved.PreferredRegions);
+        _ = PopulateFiltersAsync(saved.PreferredCities, saved.PreferredModes);
     }
 
-    public ObservableCollection<RegionOption> Regions { get; } = new();
+    public ObservableCollection<RegionGroupViewModel> LocationGroups { get; } = new();
+
+    public ObservableCollection<ModeOption> GameModes { get; } = new();
 
     public RelayCommand StartStopCommand { get; }
 
     public bool ExcludeServersWithBots
     {
         get => _excludeServersWithBots;
-        set => SetField(ref _excludeServersWithBots, value);
+        set
+        {
+            if (SetField(ref _excludeServersWithBots, value))
+            {
+                PersistSettings();
+            }
+        }
     }
 
     public string MinHumanPlayersText
     {
         get => _minHumanPlayersText;
-        set => SetField(ref _minHumanPlayersText, value);
-    }
-
-    public string MaxPingMsText
-    {
-        get => _maxPingMsText;
-        set => SetField(ref _maxPingMsText, value);
+        set
+        {
+            if (SetField(ref _minHumanPlayersText, value))
+            {
+                PersistSettings();
+            }
+        }
     }
 
     public string PollIntervalSecondsText
     {
         get => _pollIntervalSecondsText;
-        set => SetField(ref _pollIntervalSecondsText, value);
+        set
+        {
+            if (SetField(ref _pollIntervalSecondsText, value))
+            {
+                PersistSettings();
+            }
+        }
     }
 
     public string SearchTimeoutSecondsText
     {
         get => _searchTimeoutSecondsText;
-        set => SetField(ref _searchTimeoutSecondsText, value);
+        set
+        {
+            if (SetField(ref _searchTimeoutSecondsText, value))
+            {
+                PersistSettings();
+            }
+        }
     }
 
     public bool IsSearching
@@ -91,26 +110,46 @@ public sealed class MainViewModel : ViewModelBase
         private set => SetField(ref _statusText, value);
     }
 
-    private async Task PopulateRegionsAsync(IReadOnlyCollection<string> previouslySelected)
+    private async Task PopulateFiltersAsync(IReadOnlyCollection<string> previousCities, IReadOnlyCollection<string> previousModes)
     {
         try
         {
             using var client = new WarmupApiClient();
             var cards = await client.FetchServersAsync(CancellationToken.None).ConfigureAwait(false);
-            var regionNames = cards.Select(c => c.Region).Where(r => !string.IsNullOrWhiteSpace(r))
-                .Distinct().OrderBy(r => r);
+
+            var groupedByRegion = cards
+                .Where(c => !string.IsNullOrWhiteSpace(c.Region) && !string.IsNullOrWhiteSpace(c.City))
+                .GroupBy(c => c.Region)
+                .OrderBy(g => g.Key);
+
+            var modeNames = cards.Select(c => c.Mode).Where(m => !string.IsNullOrWhiteSpace(m))
+                .Distinct().OrderBy(m => m).ToList();
 
             Dispatcher.UIThread.Post(() =>
             {
-                foreach (var name in regionNames)
+                foreach (var regionGroup in groupedByRegion)
                 {
-                    Regions.Add(new RegionOption(name) { IsSelected = previouslySelected.Contains(name) });
+                    var group = new RegionGroupViewModel(regionGroup.Key, PersistSettings);
+                    foreach (var city in regionGroup.Select(c => c.City).Distinct().OrderBy(c => c))
+                    {
+                        group.AddCity(city, previousCities.Contains(city));
+                    }
+
+                    LocationGroups.Add(group);
                 }
+
+                foreach (var mode in modeNames)
+                {
+                    GameModes.Add(new ModeOption(mode, PersistSettings) { IsSelected = previousModes.Contains(mode) });
+                }
+
+                _initialized = true;
             });
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
-            Log($"Could not load region list yet ({ex.Message}). You can still search with \"any region\".");
+            Log($"Could not load region/mode list yet ({ex.Message}). You can still search with \"any\".");
+            _initialized = true;
         }
     }
 
@@ -173,12 +212,6 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
 
-        if (!int.TryParse(MaxPingMsText, out var maxPing) || maxPing <= 0)
-        {
-            error = "Max ping must be a positive number.";
-            return false;
-        }
-
         if (!int.TryParse(PollIntervalSecondsText, out var poll) || poll < 3)
         {
             error = "Poll interval must be at least 3 seconds (be nice to WarmupServer's API).";
@@ -193,11 +226,24 @@ public sealed class MainViewModel : ViewModelBase
 
         settings.ExcludeServersWithBots = ExcludeServersWithBots;
         settings.MinHumanPlayers = minHumans;
-        settings.MaxPingMs = maxPing;
         settings.PollIntervalSeconds = poll;
         settings.SearchTimeoutSeconds = timeout;
-        settings.PreferredRegions = Regions.Where(r => r.IsSelected).Select(r => r.Name).ToList();
+        settings.PreferredCities = LocationGroups.SelectMany(g => g.Cities).Where(c => c.IsSelected).Select(c => c.Name).ToList();
+        settings.PreferredModes = GameModes.Where(m => m.IsSelected).Select(m => m.Name).ToList();
         return true;
+    }
+
+    private void PersistSettings()
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        if (TryBuildSettings(out var settings, out _))
+        {
+            SettingsStore.Save(settings);
+        }
     }
 
     private void Log(string message)
