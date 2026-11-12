@@ -215,18 +215,16 @@ public sealed class MainViewModel : ViewModelBase
 
     private async Task RunSearchAsync(UserSettings settings, CancellationToken ct)
     {
-        var failedEndpoints = new HashSet<string>();
-
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                // Scoped per attempt, not around the whole loop: a hiccup on
-                // one candidate (e.g. a flaky GSI event) should only cost us
-                // that one attempt, never silently end the entire retry loop.
+                // The retry-on-error catch below can loop back here, but every
+                // join attempt now returns after one confirmation check (see
+                // the switch below) - join confirmation no longer drives retry.
                 try
                 {
-                    var found = await _finder.RunUntilFoundAsync(settings, Log, ct, failedEndpoints).ConfigureAwait(false);
+                    var found = await _finder.RunUntilFoundAsync(settings, Log, ct).ConfigureAwait(false);
                     if (found is null)
                     {
                         return;
@@ -241,6 +239,9 @@ public sealed class MainViewModel : ViewModelBase
                     Log($"Joining {found.DisplayName}...");
                     SteamLauncher.Connect(host, port);
 
+                    // Join confirmation (via CS2's GSI) is informational only for now - it does
+                    // NOT drive auto-retry. The signal has proven unreliable enough in practice
+                    // that acting on it risked abandoning a server you were actually fine on.
                     var confirmation = await WaitForJoinWithHeartbeatAsync(found, settings.JoinTimeoutSeconds, ct).ConfigureAwait(false);
                     switch (confirmation)
                     {
@@ -249,14 +250,14 @@ public sealed class MainViewModel : ViewModelBase
                             return;
 
                         case JoinConfirmationResult.JoinedThenLeft:
-                            Log($"You connected to {found.DisplayName} but left/got kicked shortly after. Trying another server...");
-                            failedEndpoints.Add(found.Ip);
-                            continue;
+                            Log($"Heads up: it looked like you connected to {found.DisplayName} but then left/got kicked. " +
+                                "Not auto-retrying this one - check in-game and hit Find & Join again if you need another server.");
+                            return;
 
                         case JoinConfirmationResult.NotConfirmed:
-                            Log($"Could not confirm you joined {found.DisplayName} within {settings.JoinTimeoutSeconds}s. Trying another server...");
-                            failedEndpoints.Add(found.Ip);
-                            continue;
+                            Log($"Could not confirm you joined {found.DisplayName} within {settings.JoinTimeoutSeconds}s " +
+                                "(this check isn't fully reliable yet, so it may have worked fine). Not auto-retrying.");
+                            return;
 
                         case JoinConfirmationResult.Unavailable:
                         default:

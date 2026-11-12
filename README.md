@@ -48,27 +48,27 @@ Connect" button uses), so Steam launches/foregrounds CS2 and connects for you.
 All of your filter choices are saved to disk as soon as you change them, so
 they're already set the next time you open the app.
 
-### Join confirmation (and auto-retry)
+### Join confirmation (informational, not auto-retried)
 
 Firing the connect link doesn't guarantee you actually get in - someone else
 can take the last slot in the gap between the server list refreshing and CS2
-loading, or the server can boot you right back out. To catch that, the app
-uses CS2's built-in **Game State Integration** to check whether you're
-actually in and playing on the target map. This is a two-phase wait, not one
-long fixed timer, since a kick after a successful join tends to happen almost
-immediately: up to your "Load-in timeout" setting (default 10s - covers
-CS2/map load time, tune it up if your machine loads in slower) to see you on
-the map at all, then once you're confirmed in, only 5 more seconds to make
-sure it sticks before declaring success - so a fast kick gets caught and
-retried in seconds, not after sitting out a long fixed window regardless of
-what already happened.
+loading, or the server can boot you right back out. The app tries to check
+this using CS2's built-in **Game State Integration**: up to your "Load-in
+timeout" setting (default 10s) to see you on the target map at all, then once
+you're confirmed in, 5 more seconds to make sure it sticks.
 
-- **Confirmed** - you're in. Done.
+This check isn't reliable enough yet to act on automatically, so right now
+it's purely informational - it logs what it saw, but **the app always stops
+after one join attempt regardless of the result** (it will not auto-exclude a
+server or keep searching based on this check). If you want to try another
+server, just hit Find & Join again.
+
+- **Confirmed** - GSI saw you in and playing. Logged, then stops.
 - **Joined then left** - GSI saw you on the map, then saw you back at the
-  menu (kicked/dropped). The app crosses that server off and tries the next
-  match automatically.
-- **Not confirmed** - never saw you on the map in time (could mean the
-  connect failed, or CS2 is just still loading). Also retried automatically.
+  menu. Logged as a heads-up, then stops - check in-game yourself.
+- **Not confirmed** - never saw you on the map in time. Also just logged;
+  this often just means the check itself didn't catch it, not that the join
+  failed.
 
 This needs CS2's GSI to be pointed at the app, which happens automatically -
 on first launch, WarmupJoiner writes a small config file into your CS2
